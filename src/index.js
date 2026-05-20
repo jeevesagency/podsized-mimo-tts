@@ -1,10 +1,9 @@
 // MiMo TTS service for self-hosted VPS (Docker via easypanel).
-// Receives {text, episode_identifier} from Supabase edge fn, calls MiMo, transcodes WAV→opus,
-// uploads to R2 via S3 v4, returns JSON.
+// Receives {text} from Supabase edge fn, calls MiMo, transcodes WAV→opus,
+// returns opus bytes inline. The edge fn handles R2 upload using its existing credentials.
 
 import http from 'node:http';
 import { Buffer } from 'node:buffer';
-import { createHmac, createHash } from 'node:crypto';
 import OpusScript from 'opusscript';
 import { packOggOpus } from './ogg_opus.js';
 
@@ -12,14 +11,9 @@ const {
     PORT = '3000',
     WORKER_SHARED_SECRET,
     DEEPINFRA_API_KEY,
-    R2_ACCESS_KEY_ID,
-    R2_SECRET_ACCESS_KEY,
-    R2_ENDPOINT,
-    R2_BUCKET,
-    R2_PUBLIC_URL,
 } = process.env;
 
-for (const k of ['WORKER_SHARED_SECRET', 'DEEPINFRA_API_KEY', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_ENDPOINT', 'R2_BUCKET', 'R2_PUBLIC_URL']) {
+for (const k of ['WORKER_SHARED_SECRET', 'DEEPINFRA_API_KEY']) {
     if (!process.env[k]) {
         console.error(`[FATAL] missing env: ${k}`);
         process.exit(1);
@@ -98,33 +92,6 @@ function decodeDataUrl(dataUrl) {
     return new Uint8Array(Buffer.from(b64, 'base64'));
 }
 
-// AWS Sig v4 for R2
-function sha256Hex(data) {
-    return createHash('sha256').update(data).digest('hex');
-}
-function hmac(key, msg) {
-    return createHmac('sha256', key).update(msg).digest();
-}
-async function signR2Put(url, body) {
-    const u = new URL(url);
-    const amzDate = new Date().toISOString().replace(/[:-]|\.\d{3}/g, '');
-    const dateStamp = amzDate.slice(0, 8);
-    const payloadHash = sha256Hex(body);
-    const region = 'auto';
-    const ch = `host:${u.hostname}\nx-amz-content-sha256:${payloadHash}\nx-amz-date:${amzDate}\n`;
-    const sh = 'host;x-amz-content-sha256;x-amz-date';
-    const cr = `PUT\n${u.pathname}\n\n${ch}\n${sh}\n${payloadHash}`;
-    const cs = `${dateStamp}/${region}/s3/aws4_request`;
-    const sts = `AWS4-HMAC-SHA256\n${amzDate}\n${cs}\n${sha256Hex(cr)}`;
-    let k = hmac(`AWS4${R2_SECRET_ACCESS_KEY}`, dateStamp);
-    k = hmac(k, region);
-    k = hmac(k, 's3');
-    k = hmac(k, 'aws4_request');
-    const signature = createHmac('sha256', k).update(sts).digest('hex');
-    const auth = `AWS4-HMAC-SHA256 Credential=${R2_ACCESS_KEY_ID}/${cs}, SignedHeaders=${sh}, Signature=${signature}`;
-    return { auth, amzDate, payloadHash };
-}
-
 async function readJsonBody(req) {
     return new Promise((resolve, reject) => {
         const chunks = [];
@@ -155,11 +122,10 @@ const server = http.createServer(async (req, res) => {
     try { payload = await readJsonBody(req); }
     catch { return send(res, 400, { error: 'invalid JSON body' }); }
     const text = payload?.text ?? '';
-    const ident = payload?.episode_identifier ?? '';
-    if (!text || !ident) return send(res, 400, { error: 'missing text or episode_identifier' });
+    if (!text) return send(res, 400, { error: 'missing text' });
 
     const voice = pickVoice();
-    console.log(`[MIMO] voice=${voice.slug} chars=${text.length} ident=${ident}`);
+    console.log(`[MIMO] voice=${voice.slug} chars=${text.length}`);
 
     try {
         // 1. MiMo
@@ -185,42 +151,19 @@ const server = http.createServer(async (req, res) => {
         const transcodeMs = Date.now() - t1;
         console.log(`[MIMO] transcode ${transcodeMs}ms, opus ${opus.byteLength}B`);
 
-        // 3. Upload to R2
-        const audioFileName = `audio-summaries/${ident}.opus`;
-        const uploadUrl = `${R2_ENDPOINT}/${R2_BUCKET}/${audioFileName}`;
-        const sig = await signR2Put(uploadUrl, opus);
-        const t2 = Date.now();
-        const put = await fetch(uploadUrl, {
-            method: 'PUT',
-            headers: {
-                'Content-Type': 'audio/ogg',
-                'x-amz-content-sha256': sig.payloadHash,
-                'x-amz-date': sig.amzDate,
-                Authorization: sig.auth,
-            },
-            body: opus,
+        // 3. Return opus bytes inline; caller handles R2 upload.
+        res.writeHead(200, {
+            'Content-Type': 'audio/ogg',
+            'X-Voice-Used': voice.slug,
+            'X-Character-Count': String(text.length),
+            'X-Audio-Provider': 'mimo',
+            'X-Generation-Cost': String(mimoJson.inference_status?.cost ?? 0),
+            'X-Mimo-Ms': String(mimoMs),
+            'X-Transcode-Ms': String(transcodeMs),
+            'X-Opus-Bytes': String(opus.byteLength),
+            'Content-Length': String(opus.byteLength),
         });
-        const uploadMs = Date.now() - t2;
-        if (!put.ok) {
-            const body = await put.text();
-            return send(res, 502, { error: `r2 upload failed ${put.status}: ${body.slice(0, 200)}` });
-        }
-        console.log(`[MIMO] r2 upload ${uploadMs}ms`);
-
-        const audio_url = `${R2_PUBLIC_URL}/${audioFileName}`;
-        return send(res, 200, {
-            audio_url,
-            voice_used: voice.slug,
-            character_count: text.length,
-            audio_provider: 'mimo',
-            generation_cost: mimoJson.inference_status?.cost ?? 0,
-            runtime_ms: mimoJson.inference_status?.runtime_ms ?? 0,
-            opus_bytes: opus.byteLength,
-            content_type: 'audio/ogg',
-            mimo_ms: mimoMs,
-            transcode_ms: transcodeMs,
-            upload_ms: uploadMs,
-        });
+        res.end(Buffer.from(opus));
     } catch (e) {
         console.error('[MIMO] error:', e);
         return send(res, 500, { error: e?.message ?? String(e), voice_used: voice.slug });
