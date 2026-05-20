@@ -73,8 +73,42 @@ function parseWav(buf) {
     throw new Error('WAV missing data chunk');
 }
 
-function wavToOpus(wav) {
-    const { samples, sampleRate, channels } = parseWav(wav);
+// Split text into chunks of ~maxChars at sentence boundaries.
+// MiMo voicedesign caps output at ~60s of audio per call (≈ 950 chars at 16 chars/sec).
+// We use 800 chars to leave headroom for slower-paced voices.
+function splitIntoChunks(text, maxChars = 800) {
+    const sentences = text.match(/[^.!?]+[.!?]+(\s+|$)|[^.!?]+$/g) ?? [text];
+    const chunks = [];
+    let current = '';
+    for (const s of sentences) {
+        if (current.length + s.length <= maxChars) {
+            current += s;
+        } else {
+            if (current) chunks.push(current.trim());
+            // If a single sentence exceeds maxChars (rare), still emit it; MiMo can handle up to ~950
+            current = s;
+        }
+    }
+    if (current.trim()) chunks.push(current.trim());
+    return chunks;
+}
+
+// Concatenate PCM Int16 samples from multiple WAVs into one big Int16Array.
+function concatWavs(wavs) {
+    const parsed = wavs.map(parseWav);
+    const sampleRate = parsed[0].sampleRate;
+    const channels = parsed[0].channels;
+    const total = parsed.reduce((s, p) => s + p.samples.length, 0);
+    const combined = new Int16Array(total);
+    let off = 0;
+    for (const p of parsed) {
+        combined.set(p.samples, off);
+        off += p.samples.length;
+    }
+    return { samples: combined, sampleRate, channels };
+}
+
+function pcmToOpus(samples, sampleRate, channels) {
     const enc = new OpusScript(sampleRate, channels, OpusScript.Application.AUDIO);
     enc.setBitrate(24000);
     const frameSize = (sampleRate * 20) / 1000;
@@ -86,6 +120,24 @@ function wavToOpus(wav) {
     }
     enc.delete();
     return packOggOpus(packets, { inputSampleRate: sampleRate, channels, frameSizeMs: 20 });
+}
+
+function wavToOpus(wav) {
+    const { samples, sampleRate, channels } = parseWav(wav);
+    return pcmToOpus(samples, sampleRate, channels);
+}
+
+async function callMimo(text, voiceDescription) {
+    const resp = await fetch(MIMO_ENDPOINT, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${DEEPINFRA_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: MIMO_MODEL, input: text, voice: voiceDescription, response_format: 'wav' }),
+    });
+    if (!resp.ok) {
+        const body = await resp.text();
+        throw new Error(`mimo ${resp.status}: ${body.slice(0, 200)}`);
+    }
+    return new Uint8Array(await resp.arrayBuffer());
 }
 
 function decodeDataUrl(dataUrl) {
@@ -131,26 +183,26 @@ const server = http.createServer(async (req, res) => {
     console.log(`[MIMO] voice=${voice.slug} chars=${text.length}`);
 
     try {
-        // 1. MiMo
-        const t0 = Date.now();
-        const mimoResp = await fetch(MIMO_ENDPOINT, {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${DEEPINFRA_API_KEY}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: MIMO_MODEL, input: text, voice: voice.description, response_format: 'wav' }),
-        });
-        const mimoMs = Date.now() - t0;
-        if (!mimoResp.ok) {
-            const body = await mimoResp.text();
-            return send(res, 502, { error: `mimo ${mimoResp.status}: ${body.slice(0, 300)}`, voice_used: voice.slug });
-        }
-        const wav = new Uint8Array(await mimoResp.arrayBuffer());
-        console.log(`[MIMO] mimo ${mimoMs}ms, wav ${wav.byteLength}B`);
+        // 1. MiMo voicedesign caps each call at ~60s output (~950 chars). Chunk longer scripts.
+        const chunks = splitIntoChunks(text, 800);
+        console.log(`[MIMO] split ${text.length} chars into ${chunks.length} chunks (avg ${Math.round(text.length / chunks.length)} chars)`);
 
-        // 2. Transcode
+        const t0 = Date.now();
+        const wavs = [];
+        for (let i = 0; i < chunks.length; i++) {
+            const chunkT0 = Date.now();
+            const wav = await callMimo(chunks[i], voice.description);
+            console.log(`[MIMO] chunk ${i + 1}/${chunks.length} (${chunks[i].length} chars) → ${wav.byteLength}B in ${Date.now() - chunkT0}ms`);
+            wavs.push(wav);
+        }
+        const mimoMs = Date.now() - t0;
+
+        // 2. Concatenate PCM + transcode to opus
         const t1 = Date.now();
-        const opus = wavToOpus(wav);
+        const { samples, sampleRate, channels } = concatWavs(wavs);
+        const opus = pcmToOpus(samples, sampleRate, channels);
         const transcodeMs = Date.now() - t1;
-        console.log(`[MIMO] transcode ${transcodeMs}ms, opus ${opus.byteLength}B`);
+        console.log(`[MIMO] mimo total ${mimoMs}ms, transcode ${transcodeMs}ms, opus ${opus.byteLength}B (${(samples.length / sampleRate).toFixed(1)}s audio)`);
 
         // 3. Return opus bytes inline; caller handles R2 upload.
         res.writeHead(200, {
@@ -162,6 +214,8 @@ const server = http.createServer(async (req, res) => {
             'X-Mimo-Ms': String(mimoMs),
             'X-Transcode-Ms': String(transcodeMs),
             'X-Opus-Bytes': String(opus.byteLength),
+            'X-Chunks': String(chunks.length),
+            'X-Audio-Seconds': String((samples.length / sampleRate).toFixed(1)),
             'Content-Length': String(opus.byteLength),
         });
         res.end(Buffer.from(opus));
