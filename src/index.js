@@ -188,13 +188,13 @@ const server = http.createServer(async (req, res) => {
         console.log(`[MIMO] split ${text.length} chars into ${chunks.length} chunks (avg ${Math.round(text.length / chunks.length)} chars)`);
 
         const t0 = Date.now();
-        const wavs = [];
-        for (let i = 0; i < chunks.length; i++) {
-            const chunkT0 = Date.now();
-            const wav = await callMimo(chunks[i], voice.description);
-            console.log(`[MIMO] chunk ${i + 1}/${chunks.length} (${chunks[i].length} chars) → ${wav.byteLength}B in ${Date.now() - chunkT0}ms`);
-            wavs.push(wav);
-        }
+        // Parallelize chunk calls. DeepInfra MiMo handles concurrent requests well in our testing.
+        const wavs = await Promise.all(chunks.map(async (chunk, i) => {
+            const ct = Date.now();
+            const wav = await callMimo(chunk, voice.description);
+            console.log(`[MIMO] chunk ${i + 1}/${chunks.length} (${chunk.length} chars) → ${wav.byteLength}B in ${Date.now() - ct}ms`);
+            return wav;
+        }));
         const mimoMs = Date.now() - t0;
 
         // 2. Concatenate PCM + transcode to opus
