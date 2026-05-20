@@ -1,0 +1,12 @@
+{
+  "name": "mimo-tts-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "opusscript": "0.1.1"
+  }
+}
