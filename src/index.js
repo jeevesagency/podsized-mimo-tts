@@ -20,7 +20,10 @@ for (const k of ['WORKER_SHARED_SECRET', 'DEEPINFRA_API_KEY']) {
     }
 }
 
-const MIMO_ENDPOINT = 'https://api.deepinfra.com/v1/inference/XiaomiMiMo/MiMo-V2.5-tts-voicedesign';
+// OpenAI-compatible endpoint returns raw WAV bytes (vs native inference which wraps in JSON
+// AND truncates voicedesign output to ~60s — confirmed via direct test).
+const MIMO_ENDPOINT = 'https://api.deepinfra.com/v1/openai/audio/speech';
+const MIMO_MODEL = 'XiaomiMiMo/MiMo-V2.5-tts-voicedesign';
 
 const MIMO_FEMALE = [
     { slug: 'f01_bright_us_late20s',     description: 'Bright, energetic late-twenties American female podcast host. Smiling delivery, quick conversational pacing, warm but punchy.' },
@@ -133,16 +136,14 @@ const server = http.createServer(async (req, res) => {
         const mimoResp = await fetch(MIMO_ENDPOINT, {
             method: 'POST',
             headers: { Authorization: `Bearer ${DEEPINFRA_API_KEY}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text, voice: voice.description, output_format: 'wav' }),
+            body: JSON.stringify({ model: MIMO_MODEL, input: text, voice: voice.description, response_format: 'wav' }),
         });
         const mimoMs = Date.now() - t0;
         if (!mimoResp.ok) {
             const body = await mimoResp.text();
             return send(res, 502, { error: `mimo ${mimoResp.status}: ${body.slice(0, 300)}`, voice_used: voice.slug });
         }
-        const mimoJson = await mimoResp.json();
-        if (!mimoJson.audio) return send(res, 502, { error: 'mimo missing audio field' });
-        const wav = decodeDataUrl(mimoJson.audio);
+        const wav = new Uint8Array(await mimoResp.arrayBuffer());
         console.log(`[MIMO] mimo ${mimoMs}ms, wav ${wav.byteLength}B`);
 
         // 2. Transcode
@@ -157,7 +158,7 @@ const server = http.createServer(async (req, res) => {
             'X-Voice-Used': voice.slug,
             'X-Character-Count': String(text.length),
             'X-Audio-Provider': 'mimo',
-            'X-Generation-Cost': String(mimoJson.inference_status?.cost ?? 0),
+            'X-Generation-Cost': '0',
             'X-Mimo-Ms': String(mimoMs),
             'X-Transcode-Ms': String(transcodeMs),
             'X-Opus-Bytes': String(opus.byteLength),
