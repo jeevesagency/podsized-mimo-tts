@@ -4,6 +4,7 @@
 
 import http from 'node:http';
 import { Buffer } from 'node:buffer';
+import { spawn } from 'node:child_process';
 import OpusScript from 'opusscript';
 import { packOggOpus } from './ogg_opus.js';
 
@@ -121,6 +122,52 @@ function concatWavs(wavs) {
     return { samples: combined, sampleRate, channels };
 }
 
+// Dynamic atempo: stretch PCM so output lands at TARGET_CPS chars/sec.
+// MiMo speaks at ~17-19 chars/sec regardless of voice description — see the
+// 2026-05-25 probe results (the `speed` parameter on the OpenAI-compat endpoint
+// is silently ignored by the voicedesign model). User-validated sweet spot is
+// ~16 cps. We only ever slow down (never speed up); MIN_ATEMPO floor protects
+// audio quality (below 0.80 it sounds tape-stretched on consonants).
+const TARGET_CPS = 16;
+const MIN_ATEMPO = 0.80;
+const ATEMPO_DEADBAND = 0.02; // skip ffmpeg if the adjustment is < 2%
+
+function computeAtempo(chars, audioSeconds) {
+    const cps = chars / audioSeconds;
+    if (cps <= TARGET_CPS) return 1.0; // already at or under target — leave alone
+    return Math.max(MIN_ATEMPO, TARGET_CPS / cps);
+}
+
+async function applyAtempo(pcmInt16, sampleRate, channels, factor) {
+    return new Promise((resolve, reject) => {
+        const ff = spawn('ffmpeg', [
+            '-hide_banner', '-loglevel', 'error',
+            '-f', 's16le', '-ar', String(sampleRate), '-ac', String(channels),
+            '-i', 'pipe:0',
+            '-filter:a', `atempo=${factor.toFixed(3)}`,
+            '-f', 's16le',
+            'pipe:1',
+        ], { stdio: ['pipe', 'pipe', 'pipe'] });
+        const out = [];
+        let stderr = '';
+        ff.stdout.on('data', c => out.push(c));
+        ff.stderr.on('data', c => { stderr += c.toString(); });
+        ff.on('error', reject);
+        ff.on('close', code => {
+            if (code !== 0) return reject(new Error(`ffmpeg exit ${code}: ${stderr.slice(-300)}`));
+            const buf = Buffer.concat(out);
+            // round down to nearest sample pair if odd byte count slipped through
+            const sampleCount = Math.floor(buf.byteLength / 2);
+            const arr = new Int16Array(sampleCount);
+            for (let i = 0; i < sampleCount; i++) arr[i] = buf.readInt16LE(i * 2);
+            resolve(arr);
+        });
+        ff.stdin.on('error', reject);
+        ff.stdin.write(Buffer.from(pcmInt16.buffer, pcmInt16.byteOffset, pcmInt16.byteLength));
+        ff.stdin.end();
+    });
+}
+
 function pcmToOpus(samples, sampleRate, channels) {
     const enc = new OpusScript(sampleRate, channels, OpusScript.Application.AUDIO);
     enc.setBitrate(24000);
@@ -210,12 +257,24 @@ const server = http.createServer(async (req, res) => {
         }));
         const mimoMs = Date.now() - t0;
 
-        // 2. Concatenate PCM + transcode to opus
+        // 2. Concatenate PCM, apply dynamic atempo, transcode to opus
         const t1 = Date.now();
         const { samples, sampleRate, channels } = concatWavs(wavs);
-        const opus = pcmToOpus(samples, sampleRate, channels);
-        const transcodeMs = Date.now() - t1;
-        console.log(`[MIMO] mimo total ${mimoMs}ms, transcode ${transcodeMs}ms, opus ${opus.byteLength}B (${(samples.length / sampleRate).toFixed(1)}s audio)`);
+        const rawSeconds = samples.length / sampleRate;
+        const rawCps = text.length / rawSeconds;
+        const atempo = computeAtempo(text.length, rawSeconds);
+        let pcm = samples;
+        let atempoMs = 0;
+        if (Math.abs(1 - atempo) >= ATEMPO_DEADBAND) {
+            const ta = Date.now();
+            pcm = await applyAtempo(samples, sampleRate, channels, atempo);
+            atempoMs = Date.now() - ta;
+        }
+        const finalSeconds = pcm.length / sampleRate;
+        const finalCps = text.length / finalSeconds;
+        const opus = pcmToOpus(pcm, sampleRate, channels);
+        const transcodeMs = Date.now() - t1 - atempoMs;
+        console.log(`[MIMO] cps ${rawCps.toFixed(2)} → ${finalCps.toFixed(2)} (atempo=${atempo.toFixed(3)}), audio ${rawSeconds.toFixed(1)}s → ${finalSeconds.toFixed(1)}s, mimo ${mimoMs}ms, atempo ${atempoMs}ms, transcode ${transcodeMs}ms, opus ${opus.byteLength}B`);
 
         // 3. Return opus bytes inline; caller handles R2 upload.
         res.writeHead(200, {
@@ -225,10 +284,14 @@ const server = http.createServer(async (req, res) => {
             'X-Audio-Provider': 'mimo',
             'X-Generation-Cost': '0',
             'X-Mimo-Ms': String(mimoMs),
+            'X-Atempo-Ms': String(atempoMs),
+            'X-Atempo-Factor': atempo.toFixed(3),
+            'X-Raw-Cps': rawCps.toFixed(2),
+            'X-Final-Cps': finalCps.toFixed(2),
             'X-Transcode-Ms': String(transcodeMs),
             'X-Opus-Bytes': String(opus.byteLength),
             'X-Chunks': String(chunks.length),
-            'X-Audio-Seconds': String((samples.length / sampleRate).toFixed(1)),
+            'X-Audio-Seconds': finalSeconds.toFixed(1),
             'Content-Length': String(opus.byteLength),
         });
         res.end(Buffer.from(opus));

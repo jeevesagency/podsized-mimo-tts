@@ -1,5 +1,9 @@
 FROM node:20-alpine
 
+# ffmpeg is used for dynamic atempo (post-process tempo adjustment of PCM)
+# to land each summary at ~16 chars/sec regardless of voice variation.
+RUN apk add --no-cache ffmpeg
+
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install --omit=dev
