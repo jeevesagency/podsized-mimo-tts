@@ -25,30 +25,34 @@ for (const k of ['WORKER_SHARED_SECRET', 'DEEPINFRA_API_KEY']) {
 const MIMO_ENDPOINT = 'https://api.deepinfra.com/v1/openai/audio/speech';
 const MIMO_MODEL = 'XiaomiMiMo/MiMo-V2.5-tts-voicedesign';
 
+// Voice descriptions intentionally avoid speed-loaded language ("quick", "snappy",
+// "brisk", "punchy", "fast", "never slow") because MiMo voicedesign reads those as
+// pacing instructions and produces rushed audio. Target a calm, natural broadcast
+// cadence ~150 words/min so a 750-word script lands around 5 minutes of audio.
 const MIMO_FEMALE = [
-    { slug: 'f01_bright_us_late20s',     description: 'Bright, energetic late-twenties American female podcast host. Smiling delivery, quick conversational pacing, warm but punchy.' },
-    { slug: 'f02_sharp_anchor_early30s', description: 'Sharp, polished female broadcast news anchor in her early thirties. Crisp articulation, confident, punchy delivery with clear emphasis.' },
-    { slug: 'f03_genz_vlogger_early20s', description: 'Casual Gen-Z female podcast host in her early twenties. Modern vlogger-style cadence, warm and friendly, lightly informal, snappy pace.' },
-    { slug: 'f04_raspy_pod_mid30s',      description: 'Mid-thirties female podcast host with a warm but lively tone and a slight raspy edge. Conversational, never sleepy, engaged pacing.' },
-    { slug: 'f05_witty_commentator_late20s', description: 'Witty late-twenties female commentator. Playful intelligence, dry humor, fast and clean delivery.' },
-    { slug: 'f06_british_pod_early30s',  description: 'Bright, articulate British female podcast host in her early thirties. Energetic, warm, with crisp consonants and brisk pacing.' },
-    { slug: 'f07_tech_millennial_30s',   description: 'Confident millennial female tech-podcast host. Friendly authority, engaged conversational pace, slightly higher pitch.' },
-    { slug: 'f08_latina_us_late20s',     description: 'Lively American female podcast host in her late twenties with a light Latina accent. Warm, animated, conversational, expressive.' },
-    { slug: 'f09_radio_host_late20s',    description: 'Polished late-twenties female radio host. Bright, melodic, snappy delivery with a smile in her voice.' },
-    { slug: 'f10_sardonic_cohost_early30s', description: 'Sharp, sardonic female late-night co-host in her early thirties. Fast, dry, charismatic, slightly lower-pitched for a female voice.' },
+    { slug: 'f01_bright_us_late20s',     description: 'Warm late-twenties American female podcast host. Smiling delivery, natural conversational pacing, unhurried and clear, warm and inviting.' },
+    { slug: 'f02_sharp_anchor_early30s', description: 'Polished female broadcast news anchor in her early thirties. Crisp articulation, confident, steady measured delivery with clear emphasis and natural pauses.' },
+    { slug: 'f03_genz_vlogger_early20s', description: 'Casual Gen-Z female podcast host in her early twenties. Modern vlogger-style cadence, warm and friendly, lightly informal, relaxed natural pace.' },
+    { slug: 'f04_raspy_pod_mid30s',      description: 'Mid-thirties female podcast host with a warm tone and a slight raspy edge. Conversational, calm and engaged, unhurried pacing with natural breath.' },
+    { slug: 'f05_witty_commentator_late20s', description: 'Witty late-twenties female commentator. Playful intelligence, dry humor, clean and measured delivery with thoughtful pauses.' },
+    { slug: 'f06_british_pod_early30s',  description: 'Articulate British female podcast host in her early thirties. Warm and engaged, with crisp consonants and natural, measured pacing.' },
+    { slug: 'f07_tech_millennial_30s',   description: 'Confident millennial female tech-podcast host. Friendly authority, calm conversational pace, slightly higher pitch, room to breathe between thoughts.' },
+    { slug: 'f08_latina_us_late20s',     description: 'American female podcast host in her late twenties with a light Latina accent. Warm and expressive, conversational and unhurried, with natural rhythm.' },
+    { slug: 'f09_radio_host_late20s',    description: 'Polished late-twenties female radio host. Bright, melodic, smooth measured delivery with a smile in her voice and natural phrasing.' },
+    { slug: 'f10_sardonic_cohost_early30s', description: 'Sardonic female late-night co-host in her early thirties. Dry, charismatic, deliberate and measured delivery, slightly lower-pitched for a female voice.' },
 ];
 
 const MIMO_MALE = [
-    { slug: 'm01_morning_us_late20s',    description: 'Energetic, charismatic American male morning-show podcast host in his late twenties. Smiling delivery, brisk pace, bright tone.' },
-    { slug: 'm02_sharp_anchor_mid30s',   description: 'Sharp male broadcast news anchor in his mid-thirties. Crisp, authoritative, even tempo with clear emphasis. Professional but not stiff.' },
-    { slug: 'm03_tech_pod_late20s',      description: 'Conversational late-twenties American male tech podcaster. Relaxed but engaged, mid-pitch, modern, never slow.' },
-    { slug: 'm04_witty_commentator_30s', description: 'Witty, articulate American male commentator in his early thirties. Light dry humor, punchy and intelligent.' },
-    { slug: 'm05_sports_radio_late20s',  description: 'Bright American male sports-radio host in his late twenties. High energy, fast clean delivery, animated.' },
-    { slug: 'm06_british_pod_mid30s',    description: 'Mid-thirties British male podcast host. Warm, conversational, energetic, slightly higher pitch, brisk pacing.' },
-    { slug: 'm07_polished_anchor_early30s', description: 'Polished male broadcast anchor in his early thirties. Confident, snappy, professional, mid-low pitch.' },
-    { slug: 'm08_genz_pod_early20s',     description: 'Casual Gen-Z American male podcast host in his early twenties. Friendly, modern, lightly informal, engaged pacing.' },
-    { slug: 'm09_southern_warm_late20s', description: 'Lively, animated American male podcast host in his late twenties with a light Southern warmth. Never slow, conversational.' },
-    { slug: 'm10_engaging_mid30s',       description: 'Engaging American male host in his early thirties with a mid pitch, quick natural pacing, and a smile in the voice.' },
+    { slug: 'm01_morning_us_late20s',    description: 'Charismatic American male morning-show podcast host in his late twenties. Smiling delivery, natural relaxed pace, bright tone, room to breathe between sentences.' },
+    { slug: 'm02_sharp_anchor_mid30s',   description: 'Male broadcast news anchor in his mid-thirties. Crisp, authoritative, steady measured tempo with clear emphasis. Professional but warm.' },
+    { slug: 'm03_tech_pod_late20s',      description: 'Conversational late-twenties American male tech podcaster. Relaxed and engaged, mid-pitch, modern, natural unhurried pace.' },
+    { slug: 'm04_witty_commentator_30s', description: 'Witty, articulate American male commentator in his early thirties. Light dry humor, measured and intelligent delivery with thoughtful pauses.' },
+    { slug: 'm05_sports_radio_late20s',  description: 'Bright American male sports-radio host in his late twenties. Animated and engaged, clean clear delivery, natural pacing, never rushed.' },
+    { slug: 'm06_british_pod_mid30s',    description: 'Mid-thirties British male podcast host. Warm, conversational, engaged, slightly higher pitch, natural measured pacing.' },
+    { slug: 'm07_polished_anchor_early30s', description: 'Polished male broadcast anchor in his early thirties. Confident, measured, professional, mid-low pitch, natural broadcast cadence.' },
+    { slug: 'm08_genz_pod_early20s',     description: 'Casual Gen-Z American male podcast host in his early twenties. Friendly, modern, lightly informal, calm conversational pacing.' },
+    { slug: 'm09_southern_warm_late20s', description: 'American male podcast host in his late twenties with a light Southern warmth. Conversational and unhurried, natural easy pacing, room to breathe.' },
+    { slug: 'm10_engaging_mid30s',       description: 'Engaging American male host in his early thirties with a mid pitch, calm natural pacing, and a smile in the voice.' },
 ];
 
 function pickVoice() {
@@ -94,16 +98,25 @@ function splitIntoChunks(text, maxChars = 800) {
 }
 
 // Concatenate PCM Int16 samples from multiple WAVs into one big Int16Array.
+// Inserts INTER_CHUNK_SILENCE_MS of silence between chunks so sentence boundaries
+// across chunk splits don't butt up against each other. Without this, the model
+// produces audibly rushed transitions where one chunk ends and the next begins.
+const INTER_CHUNK_SILENCE_MS = 300;
 function concatWavs(wavs) {
     const parsed = wavs.map(parseWav);
     const sampleRate = parsed[0].sampleRate;
     const channels = parsed[0].channels;
-    const total = parsed.reduce((s, p) => s + p.samples.length, 0);
-    const combined = new Int16Array(total);
+    const gapSamples = parsed.length > 1
+        ? Math.floor((sampleRate * INTER_CHUNK_SILENCE_MS) / 1000) * channels
+        : 0;
+    const totalAudio = parsed.reduce((s, p) => s + p.samples.length, 0);
+    const totalGap = gapSamples * (parsed.length - 1);
+    const combined = new Int16Array(totalAudio + totalGap);
     let off = 0;
-    for (const p of parsed) {
-        combined.set(p.samples, off);
-        off += p.samples.length;
+    for (let i = 0; i < parsed.length; i++) {
+        combined.set(parsed[i].samples, off);
+        off += parsed[i].samples.length;
+        if (i < parsed.length - 1) off += gapSamples; // leave zeros for silence
     }
     return { samples: combined, sampleRate, channels };
 }
